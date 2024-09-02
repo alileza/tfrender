@@ -119,8 +119,16 @@ func parseTFVarsFile(filePath string) (map[string]any, error) {
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
 
-		// Remove surrounding quotes from value if present
-		if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+		// Handle objects (map values)
+		if strings.HasPrefix(value, "{") {
+			nestedMap, remainingLines, err := parseObject(scanner, value)
+			if err != nil {
+				return nil, err
+			}
+			tfvarsMap[key] = nestedMap
+			scanner = remainingLines
+		} else if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+			// Handle string values
 			value = strings.Trim(value, "\"")
 			tfvarsMap[key] = value
 		} else if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
@@ -145,6 +153,75 @@ func parseTFVarsFile(filePath string) (map[string]any, error) {
 	}
 
 	return tfvarsMap, nil
+}
+
+func parseObject(scanner *bufio.Scanner, firstLine string) (map[string]any, *bufio.Scanner, error) {
+	objMap := make(map[string]any)
+	firstLine = strings.TrimSpace(firstLine[1:]) // Remove opening brace
+
+	if firstLine != "" {
+		if strings.HasSuffix(firstLine, "}") {
+			// The object is a single line like {key="value"}
+			firstLine = strings.TrimSuffix(firstLine, "}")
+			subparts := strings.SplitN(firstLine, "=", 2)
+			if len(subparts) == 2 {
+				key := strings.TrimSpace(subparts[0])
+				value := strings.TrimSpace(subparts[1])
+				if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+					objMap[key] = strings.Trim(value, "\"")
+				} else {
+					return nil, nil, fmt.Errorf("invalid object value format: %s", firstLine)
+				}
+			}
+			return objMap, scanner, nil
+		}
+
+		// The object starts on the same line
+		subparts := strings.SplitN(firstLine, "=", 2)
+		if len(subparts) == 2 {
+			key := strings.TrimSpace(subparts[0])
+			value := strings.TrimSpace(subparts[1])
+			if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+				objMap[key] = strings.Trim(value, "\"")
+			}
+		}
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "}") {
+			return objMap, scanner, nil
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			return nil, nil, fmt.Errorf("invalid object line format: %s", line)
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		if strings.HasPrefix(value, "{") {
+			// Handle nested objects
+			nestedMap, remainingLines, err := parseObject(scanner, value)
+			if err != nil {
+				return nil, nil, err
+			}
+			objMap[key] = nestedMap
+			scanner = remainingLines
+		} else if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+			objMap[key] = strings.Trim(value, "\"")
+		} else {
+			objMap[key] = value
+		}
+	}
+
+	return nil, nil, fmt.Errorf("object not properly closed")
 }
 
 // replaceVars replaces occurrences of var.key in the input string with the corresponding values from the varsMap.
